@@ -27,7 +27,7 @@ export async function extractTextFromPDF(file) {
             // Sort items by Y position (top to bottom) then X position (left to right)
             const items = textContent.items.sort((a, b) => {
                 const yDiff = b.transform[5] - a.transform[5]; // Y position (inverted, higher Y = top)
-                if (Math.abs(yDiff) > 2) return yDiff;
+                if (Math.abs(yDiff) > 1) return yDiff;
                 return a.transform[4] - b.transform[4]; // X position
             });
 
@@ -35,32 +35,55 @@ export async function extractTextFromPDF(file) {
             const lines = [];
             let currentLine = [];
             let currentY = null;
+            let lastY = null;
 
             for (const item of items) {
                 const itemY = item.transform[5];
+                const itemText = item.str || '';
 
                 // Check if we're on a new line (Y position changed significantly)
-                if (currentY === null || Math.abs(itemY - currentY) > 2) {
+                if (currentY === null || Math.abs(itemY - currentY) > 1) {
                     // Save previous line if it exists
                     if (currentLine.length > 0) {
-                        lines.push(currentLine.join(' ').trim());
+                        const lineText = currentLine.join('').trim();
+                        if (lineText) {
+                            lines.push(lineText);
+                        }
                     }
+
+                    // Add empty lines for large gaps (paragraph breaks)
+                    if (lastY !== null && Math.abs(itemY - lastY) > 15) {
+                        lines.push(''); // Add blank line for paragraph spacing
+                    }
+
                     currentLine = [];
+                    lastY = currentY;
                     currentY = itemY;
                 }
 
-                // Add text to current line (keep all text, even spaces)
-                if (item.str) {
-                    currentLine.push(item.str);
+                // Add text to current line, preserving spaces
+                if (itemText) {
+                    // Check if we need to add a space before this item
+                    if (currentLine.length > 0) {
+                        const lastItem = currentLine[currentLine.length - 1];
+                        const needsSpace = lastItem && !lastItem.endsWith(' ') && !itemText.startsWith(' ');
+                        if (needsSpace && itemText.trim()) {
+                            currentLine.push(' ');
+                        }
+                    }
+                    currentLine.push(itemText);
                 }
             }
 
             // Add last line
             if (currentLine.length > 0) {
-                lines.push(currentLine.join(' ').trim());
+                const lineText = currentLine.join('').trim();
+                if (lineText) {
+                    lines.push(lineText);
+                }
             }
 
-            // Join lines and preserve empty lines
+            // Join lines and add page separator
             const pageText = lines.join('\n');
             fullText += pageText + '\n\n';
 

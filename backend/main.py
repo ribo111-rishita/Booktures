@@ -7,7 +7,7 @@ app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173"],
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -19,6 +19,7 @@ class ImageRequest(BaseModel):
 @app.post("/generate-image")
 def generate_image(data: ImageRequest):
     prompt = data.prompt.strip()
+
 
     if not prompt:
         return {"imageUrl": None}

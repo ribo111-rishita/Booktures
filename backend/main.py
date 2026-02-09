@@ -1,7 +1,22 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+import requests
+import base64
+import random
+import time
 import urllib.parse
+import os
+import io
+import re
+from gradio_client import Client
+from huggingface_hub import InferenceClient
+from dotenv import load_dotenv
+
+# Load from parent directory (where .env is)
+current_dir = os.path.dirname(os.path.abspath(__file__))
+env_path = os.path.join(current_dir, '..', '.env')
+load_dotenv(env_path)
 
 app = FastAPI()
 
@@ -24,22 +39,7 @@ def generate_image(data: ImageRequest):
         return {"imageUrl": None}
 
     try:
-        import requests
-        import base64
-        import random
-        import time
-        import urllib.parse
-        import os
-        from gradio_client import Client
-        from dotenv import load_dotenv
-
-        # Load from parent directory (where .env is)
-        current_dir = os.path.dirname(os.path.abspath(__file__))
-        env_path = os.path.join(current_dir, '..', '.env')
-        load_dotenv(env_path)
-        
         # Clean prompt (user text)
-        import re
         cleaned = re.sub(r'[^\w\s\.,\']', '', prompt)
         truncated = cleaned[:300] # Increased limit slightly for context
         
@@ -54,15 +54,58 @@ def generate_image(data: ImageRequest):
         # --- LAYER 0: Google Gemini (Imagen 3/4) ---
         # Disabled due to billing requirements.
         # gemini_key = os.getenv("GEMINI_API_KEY") ... (logic removed)
+        print("Layer 0: Gemini Disabled for Performance", flush=True)
 
-        # --- LAYER 1: HuggingFace SDXL-Flash (Primary) ---
-        print("Layer 1: Trying SDXL-Flash (Gradio)...", flush=True)
+        # --- LAYER 1: HF Inference API (Authenticated) ---
+        # Uses HF_TOKEN for higher rate limits and reliability.
+        hf_token = os.getenv("HF_TOKEN")
+        if hf_token:
+            print("Layer 1: Trying HF Inference API (SDXL)...", flush=True)
+            try:
+                # Use huggingface_hub for easy inference
+                from huggingface_hub import InferenceClient
+                
+                # Using SDXL Base 1.0 (Standard, Reliable)
+                client = InferenceClient("stabilityai/stable-diffusion-xl-base-1.0", token=hf_token)
+                
+                # Generate image
+                image = client.text_to_image(
+                    final_prompt,
+                    negative_prompt="(deformed, distorted, disfigured:1.3), poorly drawn, bad anatomy, wrong anatomy, extra limb, missing limb, floating limbs, (mutated hands and fingers:1.4), disconnected limbs, mutation, mutated, ugly, disgusting, blurry, amputation, NSFW",
+                    width=1024,
+                    height=1024,
+                )
+                
+                # Convert PIL Image to Base64
+                if image:
+                    buffered = io.BytesIO()
+                    image.save(buffered, format="JPEG")
+                    img_str = base64.b64encode(buffered.getvalue()).decode()
+                    data_url = f"data:image/jpeg;base64,{img_str}"
+                    print("Success with Layer 1 (HF Inference API)", flush=True)
+                    return {"imageUrl": data_url}
+
+            except Exception as e:
+                print(f"Layer 1 Failed: {e}", flush=True)
+        else:
+             print("Layer 1 Skipped (No HF_TOKEN)", flush=True)
+
+        # --- LAYER 2: HuggingFace SDXL-Flash (Secondary Backup) ---
+        print("Layer 2: Trying SDXL-Flash (Gradio)...", flush=True)
         try:
              client = Client("KingNish/SDXL-Flash")
+             # Function /run takes: prompt, negative_prompt, use_negative_prompt, seed, width, height, guidance_scale, num_inference_steps, randomize_seed
              result = client.predict(
                 final_prompt, 
-                "(deformed, distorted, disfigured:1.3), poorly drawn, bad anatomy, wrong anatomy, extra limb, missing limb, floating limbs, (mutated hands and fingers:1.4), disconnected limbs, mutation, mutated, ugly, disgusting, blurry, amputation, NSFW", 
-                True, 0, 1024, 1024, 3.0, 8, True, api_name="/run"
+                "(deformed, distorted, disfigured:1.3), poorly drawn, bad anatomy, wrong anatomy, extra limb, missing limb, floating limbs, (mutated hands and fingers:1.4), disconnected limbs, mutation, mutated, ugly, disgusting, blurry, amputation, NSFW", # negative_prompt
+                True, # use_negative_prompt
+                0, # seed (randomized anyway)
+                1024, # width
+                1024, # height
+                3.0, # guidance_scale
+                8, # num_inference_steps
+                True, # randomize_seed
+                api_name="/run"
              )
              
              gallery = result[0]
@@ -87,41 +130,11 @@ def generate_image(data: ImageRequest):
                          img_data = img_file.read()
                          base64_str = base64.b64encode(img_data).decode('utf-8')
                          data_url = f"data:image/webp;base64,{base64_str}"
-                         print("Success with Layer 1 (SDXL-Flash)", flush=True)
+                         print("Success with Layer 2 (SDXL-Flash)", flush=True)
                          return {"imageUrl": data_url}
 
         except Exception as e:
-            print(f"Layer 1 Failed: {e}", flush=True)
-            
-        # --- LAYER 2: ByteDance SDXL-Lightning (Backup) ---
-        print("Layer 2: Trying SDXL-Lightning...", flush=True)
-        try:
-            client = Client("ByteDance/SDXL-Lightning")
-            result = client.predict(
-                final_prompt, 
-                "4-Step", # steps choice
-                api_name="/generate_image"
-            )
-            # Result usually path
-            image_path = result
-            if image_path:
-                 with open(image_path, "rb") as img_file:
-                     img_data = img_file.read()
-                     base64_str = base64.b64encode(img_data).decode('utf-8')
-                     data_url = f"data:image/webp;base64,{base64_str}"
-                     print("Success with Layer 2 (SDXL-Lightning)", flush=True)
-                     return {"imageUrl": data_url}
-        except Exception as e:
             print(f"Layer 2 Failed: {e}", flush=True)
-
-        """
-        # --- DISABLED POLLINATIONS ---
-        # "WE HAVE MOVED" placeholder is persistent.
-        # ... logic removed ...
-        """
-
-        # SDXL-Flash block moved to Layer 1
-        pass
 
 
         # --- LAYER 3: Fallback (Placeholder) ---

@@ -5,6 +5,11 @@ import './FlipBook.css';
 
 const FlipBook = ({ pages }) => {
     const bookRef = useRef();
+    const [currentPage, setCurrentPage] = React.useState(0);
+
+    const onFlip = (e) => {
+        setCurrentPage(e.data);
+    };
 
     return (
         <div className="flipbook-container">
@@ -21,11 +26,14 @@ const FlipBook = ({ pages }) => {
                 mobileScrollSupport={true}
                 className="flip-book"
                 ref={bookRef}
+                onFlip={onFlip}
             >
-                {pages.map((pageData) => (
+                {pages.map((pageData, index) => (
                     <Page
                         key={pageData.id}
                         pageData={pageData}
+                        pageIndex={index}
+                        currentPage={currentPage}
                     />
                 ))}
             </HTMLFlipBook>

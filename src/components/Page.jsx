@@ -64,7 +64,7 @@ const Page = forwardRef(({ pageData, pageIndex, currentPage }, ref) => {
                         {loading && (
                             <div className="loading-state">
                                 <div className="spinner"></div>
-                                <p>Conjuring image...</p>
+                                <p>Generating realistic scene...<br /><span style={{ fontSize: '0.8em', opacity: 0.8 }}>(Creating magic...)</span></p>
                             </div>
                         )}
                         {error && !loading && (

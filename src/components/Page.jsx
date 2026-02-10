@@ -7,7 +7,6 @@ const Page = forwardRef(({ pageData, pageIndex, currentPage }, ref) => {
     const [error, setError] = React.useState(null);
 
     React.useEffect(() => {
-        // Lazy load: only fetch if within 2 pages of current
         const isNear = Math.abs(pageIndex - currentPage) <= 2;
 
         if (pageData.type === 'image' && pageData.textForPrompt && !imageUrl && isNear) {
@@ -89,9 +88,6 @@ const Page = forwardRef(({ pageData, pageIndex, currentPage }, ref) => {
                                     }}
                                     referrerPolicy="no-referrer"
                                 />
-                                <div style={{ position: 'absolute', bottom: 0, left: 0, right: 0, fontSize: '8px', color: '#ccc', background: 'rgba(0,0,0,0.5)', padding: '2px' }}>
-                                    Debug URL: {imageUrl.substring(0, 50)}...
-                                </div>
                             </>
                         )}
                         {!imageUrl && !loading && !error && (

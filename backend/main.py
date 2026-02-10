@@ -13,7 +13,6 @@ from gradio_client import Client
 from huggingface_hub import InferenceClient
 from dotenv import load_dotenv
 
-# Load from parent directory (where .env is)
 current_dir = os.path.dirname(os.path.abspath(__file__))
 env_path = os.path.join(current_dir, '..', '.env')
 load_dotenv(env_path)
@@ -39,16 +38,10 @@ def generate_image(data: ImageRequest):
     print(f"Received Prompt: {prompt}", flush=True)
 
     try:
-        # Clean prompt (user text)
-        # Clean prompt: Remove newlines, extra spaces, and special chars to flatten text
         cleaned = re.sub(r'\s+', ' ', prompt).strip()
         
-        # INCREASE CONTEXT: 300 chars is too short for a story. 
-        # We need enough text to capture the *scene*, not just dialogue.
         truncated = cleaned[:800] 
         
-        # REALISM PROMPT ENGINEERING:
-        # We wrap the user's text in a strong wrapper that forces a scenic interpretation.
         final_prompt = (
             f"Cinematic movie scene, photorealistic, 8k, highly detailed. "
             f"A scene showing: {truncated} "
@@ -58,29 +51,16 @@ def generate_image(data: ImageRequest):
         
         encoded_prompt = urllib.parse.quote(final_prompt)
         
-        # --- LAYER 0: Google Gemini (Imagen 3/4) ---
-        # Disabled due to billing requirements.
-        # gemini_key = os.getenv("GEMINI_API_KEY") ... (logic removed)
-        print("Layer 0: Gemini Disabled for Performance", flush=True)
-
-        # --- LAYER 1: Pollinations AI (Primary - Free & Unlimited) ---
         print("Layer 1: Trying Pollinations AI...", flush=True)
         try:
-             # Use the robust image.pollinations.ai endpoint
-             # seed is random to get variation.
              seed = random.randint(0, 100000)
              
-             # model='flux-realism' allows for better style if available, otherwise 'flux' is good.
-             # We use 'flux' as it is the most consistent high-quality model on Pollinations.
-             # 'nologo=true' removes the watermark.
              poll_url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?width=896&height=1152&seed={seed}&nologo=true&model=flux"
              
-             # Fetch the image
              response = requests.get(poll_url, timeout=25)
              
-             # Check for "Rate Limit" image signature (MD5: 821b5efedc9ea8d6a498ab1b43bc569e, Size: ~74KB)
              is_rate_limit = False
-             if len(response.content) in [74444, 74445, 74443]: # Slight variance
+             if len(response.content) in [74444, 74445, 74443]: 
                   import hashlib
                   md5 = hashlib.md5(response.content).hexdigest()
                   if md5 == "821b5efedc9ea8d6a498ab1b43bc569e":
@@ -98,10 +78,8 @@ def generate_image(data: ImageRequest):
         except Exception as e:
             print(f"Layer 1 Failed: {e}", flush=True)
 
-        # --- LAYER 2: HuggingFace SDXL-Flash (Backup) ---
         print("Layer 2: Trying SDXL-Flash (Backup)...", flush=True)
         
-        # Retry loop for Backup Layer (Crucial as it is now the fallback for Rate Limits)
         max_retries = 3
         for attempt in range(max_retries):
             try:
@@ -149,17 +127,14 @@ def generate_image(data: ImageRequest):
         print("Layer 2 Failed: All retries exhausted.", flush=True)
 
 
-        # --- LAYER 3: Fallback (Local Generation) ---
         print("Layer 3: Generating Local Placeholder (Network-Free).", flush=True)
         try:
-             # Create a simple placeholder image in memory
              from PIL import Image, ImageDraw
              
              width, height = 896, 1152
-             img = Image.new('RGB', (width, height), color = (40, 44, 52)) # Dark gray background
+             img = Image.new('RGB', (width, height), color = (40, 44, 52)) 
              d = ImageDraw.Draw(img)
              
-             # Add some abstract shapes
              d.rectangle([20, 20, width-20, height-20], outline=(0, 255, 136), width=5)
              d.line([20, 20, width-20, height-20], fill=(0, 255, 136), width=2)
              d.line([20, height-20, width-20, 20], fill=(0, 255, 136), width=2)
@@ -183,3 +158,4 @@ def generate_image(data: ImageRequest):
 @app.get("/")
 def root():
     return {"status": "ok"}
+

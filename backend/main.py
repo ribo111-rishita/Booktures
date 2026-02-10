@@ -40,15 +40,22 @@ def generate_image(data: ImageRequest):
 
     try:
         # Clean prompt (user text)
-        cleaned = re.sub(r'[^\w\s\.,\']', '', prompt)
-        truncated = cleaned[:300] # Increased limit slightly for context
+        # Clean prompt: Remove newlines, extra spaces, and special chars to flatten text
+        cleaned = re.sub(r'\s+', ' ', prompt).strip()
         
-        # User's detailed prompt template
+        # INCREASE CONTEXT: 300 chars is too short for a story. 
+        # We need enough text to capture the *scene*, not just dialogue.
+        truncated = cleaned[:800] 
+        
+        # REALISM PROMPT ENGINEERING:
+        # We wrap the user's text in a strong wrapper that forces a scenic interpretation.
         final_prompt = (
-            f"Create a clear, detailed children's storybook illustration representing the following text: '{truncated}'. "
-            "Focus only on visible objects, people, setting, lighting and actions. "
-            "Avoid text, captions or watermarks. Use a colorful, cute style."
+            f"Cinematic movie scene, photorealistic, 8k, highly detailed. "
+            f"A scene showing: {truncated} "
+            f" Visualize the setting and characters described. "
+            f"Dramatic lighting, sharp focus, realistic textures."
         )
+        
         encoded_prompt = urllib.parse.quote(final_prompt)
         
         # --- LAYER 0: Google Gemini (Imagen 3/4) ---
@@ -56,74 +63,115 @@ def generate_image(data: ImageRequest):
         # gemini_key = os.getenv("GEMINI_API_KEY") ... (logic removed)
         print("Layer 0: Gemini Disabled for Performance", flush=True)
 
-        # --- LAYER 1: HF Inference API (Authenticated) ---
-        # --- LAYER 1: HF Inference API (Disabled/402) ---
-        # User has no credits.
-        print("Layer 1: Disabled (Quota Exceeded)", flush=True)
-
-        # --- LAYER 2: HuggingFace SDXL-Flash (Primary) ---
-        print("Layer 2: Trying SDXL-Flash (Gradio)...", flush=True)
+        # --- LAYER 1: Pollinations AI (Primary - Free & Unlimited) ---
+        print("Layer 1: Trying Pollinations AI...", flush=True)
         try:
-             client = Client("KingNish/SDXL-Flash")
+             # Use the robust image.pollinations.ai endpoint
+             # seed is random to get variation.
+             seed = random.randint(0, 100000)
              
-             # Simplify prompt for Flash model (distilled models prefer direct instruction)
-             flash_prompt = f"Cinematic, photorealistic, highly detailed, 8k resolution. {truncated}"
+             # model='flux-realism' allows for better style if available, otherwise 'flux' is good.
+             # We use 'flux' as it is the most consistent high-quality model on Pollinations.
+             # 'nologo=true' removes the watermark.
+             poll_url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?width=896&height=1152&seed={seed}&nologo=true&model=flux"
              
-             # Function /run takes: prompt, negative_prompt, use_negative_prompt, seed, width, height, guidance_scale, num_inference_steps, randomize_seed
-             result = client.predict(
-                flash_prompt, 
-                "(deformed, distorted, disfigured:1.3), poorly drawn, bad anatomy, wrong anatomy, extra limb, missing limb, floating limbs, (mutated hands and fingers:1.4), disconnected limbs, mutation, mutated, ugly, disgusting, blurry, amputation, NSFW, text, watermark", # negative_prompt
-                True, # use_negative_prompt
-                0, # seed (randomized anyway)
-                1024, # width
-                1024, # height
-                3.0, # guidance_scale (Flash default)
-                8, # num_inference_steps
-                True, # randomize_seed
-                api_name="/run"
-             )
+             # Fetch the image
+             response = requests.get(poll_url, timeout=25)
              
-             gallery = result[0]
-             if gallery and len(gallery) > 0:
-                 first_image = gallery[0]
-                 image_path = None
-                 if isinstance(first_image, dict):
-                     if 'image' in first_image:
-                         img_val = first_image['image']
-                         if isinstance(img_val, dict) and 'path' in img_val:
-                             image_path = img_val['path']
-                         elif isinstance(img_val, str):
-                             image_path = img_val
-                 elif isinstance(first_image, str): 
-                     image_path = first_image
-                     
-                 if not image_path and 'image' in first_image:
-                     image_path = first_image['image']
+             # Check for "Rate Limit" image signature (MD5: 821b5efedc9ea8d6a498ab1b43bc569e, Size: ~74KB)
+             is_rate_limit = False
+             if len(response.content) in [74444, 74445, 74443]: # Slight variance
+                  import hashlib
+                  md5 = hashlib.md5(response.content).hexdigest()
+                  if md5 == "821b5efedc9ea8d6a498ab1b43bc569e":
+                      is_rate_limit = True
 
-                 if image_path:
-                     with open(image_path, "rb") as img_file:
-                         img_data = img_file.read()
-                         base64_str = base64.b64encode(img_data).decode('utf-8')
-                         data_url = f"data:image/webp;base64,{base64_str}"
-                         print("Success with Layer 2 (SDXL-Flash)", flush=True)
-                         return {"imageUrl": data_url}
+             if response.status_code == 200 and len(response.content) > 5000 and not is_rate_limit:
+                 img_data = response.content
+                 base64_str = base64.b64encode(img_data).decode('utf-8')
+                 data_url = f"data:image/jpeg;base64,{base64_str}"
+                 print("Success with Layer 1 (Pollinations AI)", flush=True)
+                 return {"imageUrl": data_url}
+             else:
+                 print(f"Pollinations returned status {response.status_code} or Rate Limit image.", flush=True)
 
         except Exception as e:
-            print(f"Layer 2 Failed: {e}", flush=True)
+            print(f"Layer 1 Failed: {e}", flush=True)
+
+        # --- LAYER 2: HuggingFace SDXL-Flash (Backup) ---
+        print("Layer 2: Trying SDXL-Flash (Backup)...", flush=True)
+        
+        # Retry loop for Backup Layer (Crucial as it is now the fallback for Rate Limits)
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                 client = Client("KingNish/SDXL-Flash")
+                 flash_prompt = f"Cinematic, photorealistic, highly detailed, 8k resolution. {truncated}"
+                 
+                 result = client.predict(
+                    flash_prompt, 
+                    "(deformed, distorted, disfigured:1.3), poorly drawn, bad anatomy, wrong anatomy, extra limb, missing limb, floating limbs, (mutated hands and fingers:1.4), disconnected limbs, mutation, mutated, ugly, disgusting, blurry, amputation, NSFW, text, watermark", 
+                    True, 0, 896, 1152, 3.0, 8, True, 
+                    api_name="/run"
+                 )
+                 
+                 gallery = result[0]
+                 if gallery and len(gallery) > 0:
+                     first_image = gallery[0]
+                     image_path = None
+                     if isinstance(first_image, dict):
+                         if 'image' in first_image:
+                             img_val = first_image['image']
+                             if isinstance(img_val, dict) and 'path' in img_val:
+                                 image_path = img_val['path']
+                             elif isinstance(img_val, str):
+                                 image_path = img_val
+                     elif isinstance(first_image, str): 
+                         image_path = first_image
+                         
+                     if not image_path and 'image' in first_image:
+                         image_path = first_image['image']
+
+                     if image_path:
+                         with open(image_path, "rb") as img_file:
+                             img_data = img_file.read()
+                             base64_str = base64.b64encode(img_data).decode('utf-8')
+                             data_url = f"data:image/webp;base64,{base64_str}"
+                             print(f"Success with Layer 2 (SDXL-Flash) on attempt {attempt+1}", flush=True)
+                             return {"imageUrl": data_url}
+
+            except Exception as e:
+                print(f"Layer 2 Failed (Attempt {attempt+1}/{max_retries}): {e}", flush=True)
+                if "quota" in str(e).lower() and attempt < max_retries - 1:
+                    print("Quota hit. Waiting 20s before retry...", flush=True)
+                    time.sleep(20)
+            
+        print("Layer 2 Failed: All retries exhausted.", flush=True)
 
 
-        # --- LAYER 3: Fallback (Placeholder) ---
-        print("Layer 3: Using Fallback Placeholder.", flush=True)
-        fallback_url = "https://dummyimage.com/768x1024/faebd7/000000.png?text=AI+Generating+Failed"
+        # --- LAYER 3: Fallback (Local Generation) ---
+        print("Layer 3: Generating Local Placeholder (Network-Free).", flush=True)
         try:
-             response = requests.get(fallback_url, timeout=10, verify=False)
-             if response.status_code == 200:
-                img_data = response.content
-                base64_str = base64.b64encode(img_data).decode('utf-8')
-                data_url = f"data:image/png;base64,{base64_str}"
-                return {"imageUrl": data_url}
+             # Create a simple placeholder image in memory
+             from PIL import Image, ImageDraw
+             
+             width, height = 896, 1152
+             img = Image.new('RGB', (width, height), color = (40, 44, 52)) # Dark gray background
+             d = ImageDraw.Draw(img)
+             
+             # Add some abstract shapes
+             d.rectangle([20, 20, width-20, height-20], outline=(0, 255, 136), width=5)
+             d.line([20, 20, width-20, height-20], fill=(0, 255, 136), width=2)
+             d.line([20, height-20, width-20, 20], fill=(0, 255, 136), width=2)
+             
+             buffered = io.BytesIO()
+             img.save(buffered, format="JPEG")
+             img_str = base64.b64encode(buffered.getvalue()).decode()
+             data_url = f"data:image/jpeg;base64,{img_str}"
+             return {"imageUrl": data_url}
+             
         except Exception as e:
-            print(f"Fallback failed too: {e}", flush=True)
+             print(f"Local Fallback Failed: {e}", flush=True)
             
         return {"imageUrl": None}
 

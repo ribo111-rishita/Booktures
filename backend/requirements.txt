@@ -4,3 +4,5 @@ python-dotenv
 openai
 google-generativeai
 requests
+gradio_client
+huggingface_hub

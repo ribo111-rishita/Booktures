@@ -51,36 +51,11 @@ def generate_image(data: ImageRequest):
         
         encoded_prompt = urllib.parse.quote(final_prompt)
         
-        print("Layer 1: Trying Pollinations AI...", flush=True)
-        try:
-             seed = random.randint(0, 100000)
-             
-             poll_url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?width=896&height=1152&seed={seed}&nologo=true&model=flux"
-             
-             response = requests.get(poll_url, timeout=25)
-             
-             is_rate_limit = False
-             if len(response.content) in [74444, 74445, 74443]: 
-                  import hashlib
-                  md5 = hashlib.md5(response.content).hexdigest()
-                  if md5 == "821b5efedc9ea8d6a498ab1b43bc569e":
-                      is_rate_limit = True
-
-             if response.status_code == 200 and len(response.content) > 5000 and not is_rate_limit:
-                 img_data = response.content
-                 base64_str = base64.b64encode(img_data).decode('utf-8')
-                 data_url = f"data:image/jpeg;base64,{base64_str}"
-                 print("Success with Layer 1 (Pollinations AI)", flush=True)
-                 return {"imageUrl": data_url}
-             else:
-                 print(f"Pollinations returned status {response.status_code} or Rate Limit image.", flush=True)
-
-        except Exception as e:
-            print(f"Layer 1 Failed: {e}", flush=True)
-
-        print("Layer 2: Trying SDXL-Flash (Backup)...", flush=True)
+        print("Layer 1: Trying SDXL-Flash...", flush=True)
         
         max_retries = 3
+        layer1_success = False
+        
         for attempt in range(max_retries):
             try:
                  client = Client("KingNish/SDXL-Flash")
@@ -115,16 +90,43 @@ def generate_image(data: ImageRequest):
                              img_data = img_file.read()
                              base64_str = base64.b64encode(img_data).decode('utf-8')
                              data_url = f"data:image/webp;base64,{base64_str}"
-                             print(f"Success with Layer 2 (SDXL-Flash) on attempt {attempt+1}", flush=True)
+                             print(f"Success with Layer 1 (SDXL-Flash) on attempt {attempt+1}", flush=True)
                              return {"imageUrl": data_url}
 
             except Exception as e:
-                print(f"Layer 2 Failed (Attempt {attempt+1}/{max_retries}): {e}", flush=True)
+                print(f"Layer 1 Failed (Attempt {attempt+1}/{max_retries}): {e}", flush=True)
                 if "quota" in str(e).lower() and attempt < max_retries - 1:
                     print("Quota hit. Waiting 20s before retry...", flush=True)
                     time.sleep(20)
             
-        print("Layer 2 Failed: All retries exhausted.", flush=True)
+        print("Layer 1 Failed: All retries exhausted.", flush=True)
+
+        print("Layer 2: Trying Pollinations AI (Backup)...", flush=True)
+        try:
+             seed = random.randint(0, 100000)
+             
+             poll_url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?width=896&height=1152&seed={seed}&nologo=true&model=flux"
+             
+             response = requests.get(poll_url, timeout=25)
+             
+             is_rate_limit = False
+             if len(response.content) in [74444, 74445, 74443]: 
+                  import hashlib
+                  md5 = hashlib.md5(response.content).hexdigest()
+                  if md5 == "821b5efedc9ea8d6a498ab1b43bc569e":
+                      is_rate_limit = True
+
+             if response.status_code == 200 and len(response.content) > 5000 and not is_rate_limit:
+                 img_data = response.content
+                 base64_str = base64.b64encode(img_data).decode('utf-8')
+                 data_url = f"data:image/jpeg;base64,{base64_str}"
+                 print("Success with Layer 2 (Pollinations AI)", flush=True)
+                 return {"imageUrl": data_url}
+             else:
+                 print(f"Pollinations returned status {response.status_code} or Rate Limit image.", flush=True)
+
+        except Exception as e:
+            print(f"Layer 2 Failed: {e}", flush=True)
 
 
         print("Layer 3: Generating Local Placeholder (Network-Free).", flush=True)

@@ -10,7 +10,8 @@ import os
 import io
 import re
 from gradio_client import Client
-from huggingface_hub import InferenceClient
+import google.generativeai as genai
+
 from dotenv import load_dotenv
 
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -31,6 +32,32 @@ app.add_middleware(
 class ImageRequest(BaseModel):
     prompt: str
 
+
+# Configure Gemini
+genai.configure(api_key=os.environ.get("GEMINI_API_KEY"))
+
+def refine_prompt_with_gemini(text):
+    print("Refining prompt with Gemini...", flush=True)
+    try:
+        model = genai.GenerativeModel('gemini-2.0-flash')
+        
+        prompt_template = (
+            f"Analyze the following text from a book and create a highly detailed, cinematic visual prompt "
+            f"for an AI image generator. Focus on the main subject, setting, lighting, mood, and artistic style. "
+            f"The output must be a single paragraph of descriptive text suitable for Stable Diffusion. "
+            f"Do not include any intro/outro text, just the prompt itself.\n\n"
+            f"Text: {text}\n\n"
+            f"Visual Prompt:"
+        )
+        
+        response = model.generate_content(prompt_template)
+        refined_prompt = response.text.strip()
+        print(f"Gemini Refined Prompt: {refined_prompt[:100]}...", flush=True)
+        return refined_prompt
+    except Exception as e:
+        print(f"Gemini Refinement Failed: {e}. Falling back to original text.", flush=True)
+        return text
+
 @app.post("/generate-image")
 def generate_image(data: ImageRequest):
     prompt = data.prompt.strip()
@@ -38,20 +65,15 @@ def generate_image(data: ImageRequest):
     print(f"Received Prompt: {prompt}", flush=True)
 
     try:
-        cleaned = re.sub(r'\s+', ' ', prompt).strip()
+        # Step 1: Refine prompt with Gemini
+        final_prompt = refine_prompt_with_gemini(prompt)
         
-        truncated = cleaned[:800] 
+        # Ensure it's not too long for the image APIs (some have limits, but 1000ish is usually fine)
+        truncated = final_prompt[:1000]
         
-        final_prompt = (
-            f"Cinematic movie scene, photorealistic, 8k, highly detailed. "
-            f"A scene showing: {truncated} "
-            f" Visualize the setting and characters described. "
-            f"Dramatic lighting, sharp focus, realistic textures."
-        )
+        encoded_prompt = urllib.parse.quote(truncated)
         
-        encoded_prompt = urllib.parse.quote(final_prompt)
-        
-        print("Layer 1: Trying SDXL-Flash...", flush=True)
+        print(f"Layer 1: Trying SDXL-Flash with prompt: {truncated[:100]}...", flush=True)
         
         max_retries = 3
         layer1_success = False
@@ -61,12 +83,16 @@ def generate_image(data: ImageRequest):
                  client = Client("KingNish/SDXL-Flash")
                  flash_prompt = f"Cinematic, photorealistic, highly detailed, 8k resolution. {truncated}"
                  
+                 print(f"Layer 1 (SDXL-Flash) Attempt {attempt+1}/{max_retries} - Sending request...", flush=True)
+                 
                  result = client.predict(
                     flash_prompt, 
                     "(deformed, distorted, disfigured:1.3), poorly drawn, bad anatomy, wrong anatomy, extra limb, missing limb, floating limbs, (mutated hands and fingers:1.4), disconnected limbs, mutation, mutated, ugly, disgusting, blurry, amputation, NSFW, text, watermark", 
                     True, 0, 896, 1152, 3.0, 8, True, 
                     api_name="/run"
                  )
+                 
+                 print(f"Layer 1 (SDXL-Flash) Attempt {attempt+1} - Request successful. Processing result...", flush=True)
                  
                  gallery = result[0]
                  if gallery and len(gallery) > 0:
@@ -86,12 +112,15 @@ def generate_image(data: ImageRequest):
                          image_path = first_image['image']
 
                      if image_path:
+                         print(f"Layer 1 (SDXL-Flash) - Image path found: {image_path}", flush=True)
                          with open(image_path, "rb") as img_file:
                              img_data = img_file.read()
                              base64_str = base64.b64encode(img_data).decode('utf-8')
                              data_url = f"data:image/webp;base64,{base64_str}"
                              print(f"Success with Layer 1 (SDXL-Flash) on attempt {attempt+1}", flush=True)
                              return {"imageUrl": data_url}
+                     else:
+                         print("Layer 1 (SDXL-Flash) - No valid image path in response.", flush=True)
 
             except Exception as e:
                 print(f"Layer 1 Failed (Attempt {attempt+1}/{max_retries}): {e}", flush=True)
@@ -101,7 +130,51 @@ def generate_image(data: ImageRequest):
             
         print("Layer 1 Failed: All retries exhausted.", flush=True)
 
-        print("Layer 2: Trying Pollinations AI (Backup)...", flush=True)
+        print(f"Layer 2: Trying FLUX.1-schnell with prompt: {truncated[:100]}...", flush=True)
+        try:
+            client = Client("black-forest-labs/FLUX.1-schnell")
+            print("Layer 2 (FLUX.1-schnell) - Sending request...", flush=True)
+            
+            # FLUX.1-schnell API signature usually involves prompt, seed, randomize_seed, width, height, num_inference_steps
+            # We will try the standard /infer endpoint
+            result = client.predict(
+                    prompt=truncated,
+                    seed=0,
+                    randomize_seed=True,
+                    width=896,
+                    height=1152,
+                    num_inference_steps=4,
+                    api_name="/infer"
+            )
+            
+            print("Layer 2 (FLUX.1-schnell) - Request successful. Processing result...", flush=True)
+            
+            # Result is usually a tuple or filepath
+            if result:
+                image_path = result
+                if isinstance(result, tuple) or isinstance(result, list):
+                    image_path = result[0]
+                
+                # Check strict dictionary structure if needed, but usually it returns a path info
+                if isinstance(image_path, dict) and 'image' in image_path:
+                    image_path = image_path['image']
+                    
+                if image_path and isinstance(image_path, str) and os.path.exists(image_path):
+                     print(f"Layer 2 (FLUX.1-schnell) - Image path found: {image_path}", flush=True)
+                     with open(image_path, "rb") as img_file:
+                         img_data = img_file.read()
+                         base64_str = base64.b64encode(img_data).decode('utf-8')
+                         data_url = f"data:image/webp;base64,{base64_str}"
+                         print(f"Success with Layer 2 (FLUX.1-schnell)", flush=True)
+                         return {"imageUrl": data_url}
+                else:
+                    print(f"Layer 2 (FLUX.1-schnell) - Invalid result format: {result}", flush=True)
+
+        except Exception as e:
+            print(f"Layer 2 Failed: {e}", flush=True)
+
+
+        print("Layer 3: Trying Pollinations AI (Backup)...", flush=True)
         try:
              seed = random.randint(0, 100000)
              
@@ -120,7 +193,7 @@ def generate_image(data: ImageRequest):
                  img_data = response.content
                  base64_str = base64.b64encode(img_data).decode('utf-8')
                  data_url = f"data:image/jpeg;base64,{base64_str}"
-                 print("Success with Layer 2 (Pollinations AI)", flush=True)
+                 print("Success with Layer 3 (Pollinations AI)", flush=True)
                  return {"imageUrl": data_url}
              else:
                  print(f"Pollinations returned status {response.status_code} or Rate Limit image.", flush=True)
